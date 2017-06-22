@@ -3,10 +3,11 @@ from os.path import join
 
 
 class KivyRecipe(CythonRecipe):
-    version = "1.9.1"
+    version = "1.10.0"
     url = "https://github.com/kivy/kivy/archive/{version}.zip"
     library = "libkivy.a"
-    depends = ["python", "sdl2", "sdl2_image", "sdl2_mixer", "sdl2_ttf", "ios"]
+    depends = ["python", "sdl2", "sdl2_image", "sdl2_mixer", "sdl2_ttf", "ios",
+               "pyobjus"]
     pbx_frameworks = ["OpenGLES", "Accelerate"]
     pre_build_ext = True
 
@@ -34,7 +35,7 @@ class KivyRecipe(CythonRecipe):
             lines = fd.readlines()
         _remove_line(lines, "flags['libraries'] = ['GLESv2']")
         #_remove_line(lines, "c_options['use_sdl'] = True")
-        with open(pyconfig, "wb") as fd:
+        with open(pyconfig, "w") as fd:
             fd.writelines(lines)
 
 

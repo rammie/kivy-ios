@@ -10,7 +10,7 @@ arch_mapper = {'i386': 'darwin-i386-cc',
 
 
 class OpensslRecipe(Recipe):
-    version = "1.0.2h"
+    version = "1.0.2k"
     url = "http://www.openssl.org/source/openssl-{version}.tar.gz"
     libraries = ["libssl.a", "libcrypto.a"]
     include_dir = "include"
@@ -43,6 +43,6 @@ class OpensslRecipe(Recipe):
             sh.sed("-ie", "s!^CFLAG=!CFLAG={} !".format(build_env['CFLAGS']),
                    "Makefile")
         shprint(sh.make, "clean")
-        shprint(sh.make, "-j4", "build_libs")
+        shprint(sh.make, self.ctx.concurrent_make, "build_libs")
 
 recipe = OpensslRecipe()

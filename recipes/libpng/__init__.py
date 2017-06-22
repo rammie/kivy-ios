@@ -1,21 +1,13 @@
+# -*- coding: utf-8 -*-
 from toolchain import Recipe, shprint
-from os.path import join, exists
+from os.path import join
 import sh
-import os
 
-
-class JpegRecipe(Recipe):
-    version = "v9a"
-    url = "http://www.ijg.org/files/jpegsrc.{version}.tar.gz"
-    library = ".libs/libjpeg.a"
-    include_dir = [
-        ("jpeglib.h", ""),
-        ("jconfig.h", ""),
-        ("jerror.h", ""),
-        ("jmorecfg.h", ""),
-        ]
-    include_per_arch = True
-
+class PngRecipe(Recipe):
+    version = '1.6.26'
+    url = 'http://downloads.sourceforge.net/sourceforge/libpng/libpng-{version}.tar.gz'
+    depends = ["python"]
+    library = '.libs/libpng16.a'
 
     def build_arch(self, arch):
         build_env = arch.get_env()
@@ -29,8 +21,6 @@ class JpegRecipe(Recipe):
                 "--host={}".format(arch.triple),
                 "--disable-shared")
         shprint(sh.make, "clean")
-        shprint(sh.make, self.ctx.concurrent_make)
+        shprint(sh.make, self.ctx.concurrent_make, _env=build_env)
 
-recipe = JpegRecipe()
-
-
+recipe = PngRecipe()

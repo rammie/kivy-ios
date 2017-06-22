@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python2
 """
 Tool for compiling iOS toolchain
 ================================
@@ -19,9 +19,9 @@ import shutil
 import fnmatch
 from datetime import datetime
 try:
-    from urllib.request import FancyURLopener
+    from urllib.request import FancyURLopener, urlcleanup
 except ImportError:
-    from urllib import FancyURLopener
+    from urllib import FancyURLopener, urlcleanup
 
 curdir = dirname(__file__)
 sys.path.insert(0, join(curdir, "tools", "external"))
@@ -227,7 +227,7 @@ class Arch64IOS(Arch):
     triple = "aarch64-apple-darwin13"
     version_min = "-miphoneos-version-min=7.0"
     sysroot = sh.xcrun("--sdk", "iphoneos", "--show-sdk-path").strip()
-    
+
 
 class Graph(object):
     # Taken from python-for-android/depsort
@@ -355,6 +355,15 @@ class Context(object):
         if not ok:
             sys.exit(1)
 
+        self.use_pigz = sh.which('pigz')
+        self.use_pbzip2 = sh.which('pbzip2')
+
+        try:
+            num_cores = int(sh.sysctl('-n', 'hw.ncpu'))
+        except Exception:
+            num_cores = None
+        self.num_cores = num_cores if num_cores else 4  # default to 4 if we can't detect
+
         ensure_dir(self.root_dir)
         ensure_dir(self.build_dir)
         ensure_dir(self.cache_dir)
@@ -372,6 +381,14 @@ class Context(object):
 
         # set the state
         self.state = JsonStore(join(self.dist_dir, "state.db"))
+
+    @property
+    def concurrent_make(self):
+        return "-j{}".format(self.num_cores)
+
+    @property
+    def concurrent_xcodebuild(self):
+        return "IDEBuildOperationMaxNumberOfConcurrentCompileTasks={}".format(self.num_cores)
 
 
 class Recipe(object):
@@ -410,6 +427,9 @@ class Recipe(object):
         if exists(filename):
             unlink(filename)
 
+        # Clean up temporary files just in case before downloading.
+        urlcleanup()
+
         print('Downloading {0}'.format(url))
         urlretrieve(url, filename, report_hook)
         return filename
@@ -422,16 +442,24 @@ class Recipe(object):
             return
         print("Extract {} into {}".format(filename, cwd))
         if filename.endswith(".tgz") or filename.endswith(".tar.gz"):
-            shprint(sh.tar, "-C", cwd, "-xvzf", filename)
+            if self.ctx.use_pigz:
+                comp = '--use-compress-program={}'.format(self.ctx.use_pigz)
+            else:
+                comp = '-z'
+            shprint(sh.tar, "-C", cwd, "-xv", comp, "-f", filename)
 
         elif filename.endswith(".tbz2") or filename.endswith(".tar.bz2"):
-            shprint(sh.tar, "-C", cwd, "-xvjf", filename)
+            if self.ctx.use_pbzip2:
+                comp = '--use-compress-program={}'.format(self.ctx.use_pbzip2)
+            else:
+                comp = '-j'
+            shprint(sh.tar, "-C", cwd, "-xv", comp, "-f", filename)
 
         elif filename.endswith(".zip"):
             shprint(sh.unzip, "-d", cwd, filename)
 
         else:
-            print("Error: cannot extract, unreconized extension for {}".format(
+            print("Error: cannot extract, unrecognized extension for {}".format(
                 filename))
             raise Exception()
 
@@ -575,7 +603,8 @@ class Recipe(object):
         value = self.ctx.state.get(key)
         if not value:
             value = self.get_archive_rootdir(self.archive_fn)
-            self.ctx.state[key] = value
+            if value is not None:
+                self.ctx.state[key] = value
         return value
 
     def execute(self):
@@ -611,7 +640,9 @@ class Recipe(object):
             fn = self.archive_fn
             if not exists(fn):
                 self.download_file(self.url.format(version=self.version), fn)
-            self.ctx.state[key] = self.get_archive_rootdir(self.archive_fn)
+            status = self.get_archive_rootdir(self.archive_fn)
+            if status is not None:
+                self.ctx.state[key] = status
 
     @cache_execution
     def extract(self):
@@ -635,7 +666,7 @@ class Recipe(object):
                 shutil.copytree(src_dir, dest_dir)
                 return
             ensure_dir(build_dir)
-            self.extract_file(self.archive_fn, build_dir) 
+            self.extract_file(self.archive_fn, build_dir)
 
     @cache_execution
     def build(self, arch):
@@ -1052,13 +1083,13 @@ def update_pbxproj(filename):
 
 if __name__ == "__main__":
     import argparse
-    
+
     class ToolchainCL(object):
         def __init__(self):
             parser = argparse.ArgumentParser(
                     description="Tool for managing the iOS / Python toolchain",
                     usage="""toolchain <command> [<args>]
-                    
+
 Available commands:
     build         Build a recipe (compile a library for the required target
                   architecture)
@@ -1072,6 +1103,7 @@ Xcode:
     update        Update an existing xcode project (frameworks, libraries..)
     launchimage   Create Launch images for your xcode project
     icon          Create Icons for your xcode project
+    pip           Install a pip dependency into the distribution
 """)
             parser.add_argument("command", help="Command to run")
             args = parser.parse_args(sys.argv[1:2])
@@ -1082,14 +1114,20 @@ Xcode:
             getattr(self, args.command)()
 
         def build(self):
+            ctx = Context()
             parser = argparse.ArgumentParser(
                     description="Build the toolchain")
             parser.add_argument("recipe", nargs="+", help="Recipe to compile")
             parser.add_argument("--arch", action="append",
                                 help="Restrict compilation to this arch")
+            parser.add_argument("--concurrency", type=int, default=ctx.num_cores,
+                                help="number of concurrent build processes (where supported)")
+            parser.add_argument("--no-pigz", action="store_true", default=not bool(ctx.use_pigz),
+                                help="do not use pigz for gzip decompression")
+            parser.add_argument("--no-pbzip2", action="store_true", default=not bool(ctx.use_pbzip2),
+                                help="do not use pbzip2 for bzip2 decompression")
             args = parser.parse_args(sys.argv[2:])
 
-            ctx = Context()
             if args.arch:
                 if len(args.arch) == 1:
                     archs = args.arch[0].split()
@@ -1103,6 +1141,17 @@ Xcode:
                         continue
                 ctx.archs = [arch for arch in ctx.archs if arch.arch in archs]
                 print("Architectures restricted to: {}".format(archs))
+            ctx.num_cores = args.concurrency
+            if args.no_pigz:
+                ctx.use_pigz = False
+            if args.no_pbzip2:
+                ctx.use_pbzip2 = False
+            ctx.use_pigz = ctx.use_pbzip2
+            print("Building with {} processes, where supported".format(ctx.num_cores))
+            if ctx.use_pigz:
+                print("Using pigz to decompress gzip data")
+            if ctx.use_pbzip2:
+                print("Using pbzip2 to decompress bzip2 data")
             build_recipes(args.recipe, ctx)
 
         def recipes(self):
@@ -1142,7 +1191,7 @@ Xcode:
 
         def distclean(self):
             parser = argparse.ArgumentParser(
-                    description="Clean the build, download and dist")
+                    description="Clean the build, download, and dist")
             args = parser.parse_args(sys.argv[2:])
             ctx = Context()
             if exists(ctx.build_dir):
@@ -1172,9 +1221,9 @@ Xcode:
             parser = argparse.ArgumentParser(
                     description="Create a new xcode project")
             parser.add_argument("name", help="Name of your project")
-            parser.add_argument("directory", help="Directory where your project live")
+            parser.add_argument("directory", help="Directory where your project lives")
             args = parser.parse_args(sys.argv[2:])
-            
+
             from cookiecutter.main import cookiecutter
             ctx = Context()
             template_dir = join(curdir, "tools", "templates")
@@ -1182,6 +1231,7 @@ Xcode:
                 "title": args.name,
                 "project_name": args.name.lower(),
                 "domain_name": "org.kivy.{}".format(args.name.lower()),
+                "kivy_dir": dirname(realpath(__file__)),
                 "project_dir": realpath(args.directory),
                 "version": "1.0.0",
                 "dist_dir": ctx.dist_dir,
@@ -1232,7 +1282,6 @@ Xcode:
                     continue
                 recipe = Recipe.get_recipe(recipe, ctx)
                 recipe.init_with_ctx(ctx)
-            print(ctx.site_packages_dir)
             if not hasattr(ctx, "site_packages_dir"):
                 print("ERROR: python must be compiled before using pip")
                 sys.exit(1)
@@ -1242,16 +1291,21 @@ Xcode:
                 "CXX": "/bin/false",
                 "PYTHONPATH": ctx.site_packages_dir,
                 "PYTHONOPTIMIZE": "2",
-                "PIP_INSTALL_TARGET": ctx.site_packages_dir
+                # "PIP_INSTALL_TARGET": ctx.site_packages_dir
             }
-            print(pip_env)
-            pip_path = sh.which("pip")
-            args = [pip_path] + sys.argv[2:]
+            pip_path = sh.which("pip2")
+            pip_args = []
+            if len(sys.argv) > 2 and sys.argv[2] == "install":
+                pip_args = ["--isolated", "--prefix", ctx.python_prefix]
+                args = [pip_path] + [sys.argv[2]] + pip_args + sys.argv[3:]
+            else:
+                args = [pip_path] + pip_args + sys.argv[2:]
+
             if not pip_path:
                 print("ERROR: pip not found")
                 sys.exit(1)
             import os
-            print("-- execute pip with: {}".format(args)) 
+            print("-- execute pip with: {}".format(args))
             os.execve(pip_path, args, pip_env)
 
         def launchimage(self):
